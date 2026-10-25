@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#10151d">
+  <title>Музыка на Станции</title>
+  <link rel="stylesheet" href="/style.css?v=3">
+</head>
+<body>
+<header class="page-header">
+  <div class="brand"><span class="brand-mark" aria-hidden="true">♫</span><div><h1>Музыка на Станции</h1><p>Ваша библиотека. Ваш порядок. Ваша музыка.</p></div></div>
+  <div class="header-actions"><span id="station-ready" class="chip">Проверяем подключение…</span><a class="settings-link" href="#settings">Настройки</a></div>
+</header>
+<main>
+  <section class="panel player-panel" aria-labelledby="player-heading">
+    <div class="player-main"><div class="album-art" aria-hidden="true">♫</div><div class="player-info"><div class="eyebrow" id="player-heading">На вашей Станции <span id="play-state" class="chip">Остановлено</span></div><div id="now-playing" class="now-playing"><div class="title">Добавьте свою музыку</div><div class="sub">Выберите треки в библиотеке ниже</div></div></div></div>
+    <div class="player-bottom"><div class="player-controls" aria-label="Управление воспроизведением">
+      <button id="prev" type="button" disabled><span aria-hidden="true">⏮</span> Предыдущий</button>
+      <button id="play" type="button" class="primary" disabled><span aria-hidden="true">▶</span> Слушать</button>
+      <button id="stop" type="button" disabled><span aria-hidden="true">■</span> Стоп</button>
+      <button id="next" type="button" disabled>Следующий <span aria-hidden="true">⏭</span></button>
+    </div><div class="volume-control"><label for="volume">Громкость</label><input id="volume" type="range" min="0" max="100" step="1" value="40" disabled aria-describedby="volume-warning"><output id="volume-value" for="volume">—</output></div></div>
+    <p id="volume-warning" class="volume-warning"></p><p id="health-warning" class="health-warning" role="status" hidden></p>
+  </section>
+
+  <div id="message" class="message" role="status" aria-live="polite" aria-atomic="true"></div>
+
+  <section class="panel remote-panel" aria-labelledby="remote-heading">
+    <div class="panel-header"><div><div class="eyebrow">Из интернета или локальной сети</div><h2 id="remote-heading">Музыка по ссылке</h2></div></div>
+    <p id="remote-help" class="hint">Вставьте прямую HTTP/HTTPS-ссылку на аудиофайл или поток. Сервер передаст звук на Станцию.</p>
+    <form id="remote-form">
+      <div class="remote-fields">
+        <label for="remote-url">Ссылка на аудио<input id="remote-url" type="url" inputmode="url" placeholder="https://example.com/music.mp3" maxlength="8192" spellcheck="false" autocomplete="off" aria-describedby="remote-help" required></label>
+        <label for="remote-title">Название <span class="hint">необязательно</span><input id="remote-title" type="text" placeholder="Мой трек или радиостанция" maxlength="300"></label>
+      </div>
+      <div class="remote-actions"><div><label class="inline" for="remote-live"><input id="remote-live" type="checkbox" aria-describedby="remote-live-help"> Прямой эфир / радио</label><p id="remote-live-help" class="hint">Без определения длительности. Играет до остановки или конца потока.</p></div><button id="add-url" type="submit" class="primary">Добавить ссылку в очередь</button></div>
+    </form>
+  </section>
+
+  <section class="panel library-panel" aria-labelledby="library-heading">
+    <div class="panel-header"><div><div class="eyebrow">01 / Выберите музыку</div><h2 id="library-heading">Библиотека</h2></div><button id="refresh" type="button">Обновить</button></div>
+    <p class="hint">Музыка на сервере. Откройте папку или добавьте её сразу в очередь.</p>
+    <div class="path-bar"><button id="up" type="button" aria-label="На папку выше">↑ Выше</button><nav id="current-path" aria-label="Путь в библиотеке">Вся музыка</nav></div>
+    <label class="search-label"><span class="sr-only">Поиск в текущей папке</span><input id="library-search" type="search" placeholder="Найти в этой папке…" autocomplete="off"></label>
+    <div class="selection-bar"><label class="inline"><input id="select-all" type="checkbox"> Выбрать всё</label><span id="library-count" class="hint"></span></div>
+    <div id="library-list" class="list" aria-label="Файлы и папки"></div>
+    <div class="library-actions"><div class="toolbar"><button id="add-selected" type="button" class="primary" disabled>Добавить выбранное</button><button id="add-folder" type="button">Добавить всю папку</button></div><label class="inline hint"><input type="checkbox" id="recursive" checked> Включать вложенные папки</label></div>
+    <div class="upload-area"><div><strong>Музыка на другом устройстве?</strong><p class="hint">Загрузите с телефона или компьютера в библиотеку и очередь.</p></div><div class="toolbar"><button id="upload-button" type="button">Загрузить файлы</button><button id="upload-folder-button" type="button">Загрузить папку</button></div></div>
+    <input id="upload-input" type="file" multiple accept=".aac,.flac,.m4a,.mp3,.oga,.ogg,.opus,.wav,.wma" hidden>
+    <input id="upload-folder-input" type="file" multiple webkitdirectory hidden>
+  </section>
+
+  <section class="panel queue-panel" aria-labelledby="queue-heading">
+    <div class="panel-header"><div><div class="eyebrow">02 / Нажмите «Слушать»</div><h2 id="queue-heading">Очередь <span id="queue-count" class="counter">0</span></h2></div><button id="clear-queue" type="button" class="quiet" disabled>Очистить очередь</button></div>
+    <p id="queue-summary" class="hint">Треки будут играть по порядку</p>
+    <div id="queue-list" class="list queue" aria-label="Очередь воспроизведения"></div>
+    <p class="queue-help hint">Чтобы начать с нужного трека, нажмите «Играть» рядом с ним.</p>
+  </section>
+
+  <details id="settings" class="panel settings-panel"><summary>Настройки подключения и библиотеки <span class="hint">Раскрыть</span></summary>
+    <form id="settings-form">
+      <div class="two-columns"><label>Папка с музыкой на сервере<input id="music-root" type="text" spellcheck="false" required></label><label>Адрес сервера для колонки<input id="public-base-input" type="text" placeholder="http://192.168.1.10:8080" spellcheck="false"></label></div>
+      <label>Подключение к Станции<select id="station-mode"><option value="adb">ADB</option><option value="ssh">SSH</option></select></label>
+      <div id="adb-settings"><label>Адрес ADB<input id="station-serial" type="text" placeholder="192.168.1.7:5555" spellcheck="false"></label></div>
+      <div id="ssh-settings" hidden><div class="three-columns"><label>Адрес SSH<input id="station-host" type="text" placeholder="192.168.1.7" spellcheck="false"></label><label>Порт<input id="station-port" type="number" min="1" max="65535"></label><label>Пользователь<input id="station-user" type="text"></label></div></div>
+      <p class="hint">ADB или SSH должны быть настроены по вики проекта. Адрес сервера должен быть доступен Станции в локальной сети. Сохранение настроек останавливает воспроизведение.</p>
+      <button id="save-settings" type="submit" class="primary">Сохранить настройки</button>
+    </form>
+    <details class="diagnostics"><summary>Техническая диагностика</summary><dl class="meta"><dt>Адрес сервера</dt><dd id="public-base">—</dd><dt>Подключение</dt><dd id="station-target">—</dd><dt>Проверка звука</dt><dd id="playback-health">—</dd></dl></details>
+  </details>
+</main>
+<footer>Station Music Web · Файлы, папки, M3U и прямые ссылки · Воспроизведение на Яндекс Станции</footer>
+    <script src="/app.js?v=4"></script>
+</body>
+</html>

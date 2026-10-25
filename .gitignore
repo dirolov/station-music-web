@@ -1,0 +1,48 @@
+# Local application configuration
+/.git-data/
+.agents/
+.aws/
+.codex/
+/station-music-web.json
+/station-music-web.json.tmp
+
+# Runtime data
+/.station-music-cache/
+/uploads/
+
+# Built binaries and build/test outputs
+/stationmusic
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+coverage.out
+coverage.txt
+
+# Local environment and secret files
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Go dependencies are committed through go.mod/go.sum only
+/vendor/
+
+# Logs and temporary files
+*.log
+*.pid
+*.tmp
+*.swp
+*~
+
+# Editors and IDEs
+/.idea/
+/.vscode/
+
+# OS files
+.DS_Store
+Thumbs.db
