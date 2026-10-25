@@ -626,3 +626,7 @@ CHROMIUM_PATH=/path/to/chromium python3 testdata/ui_smoke.py
 - отсутствие остаточных процессов `maind --gst-launch` после остановки.
 
 Во время теста использовался порт `8080`.
+
+## Лицензия
+
+Проект распространяется по лицензии [MIT](LICENSE).
