@@ -37,11 +37,16 @@ type queueRequest struct {
 	URL       string   `json:"url"`
 	Title     string   `json:"title"`
 	Live      bool     `json:"live"`
+	QueueID   string   `json:"queueId"`
+	Version   uint64   `json:"version"`
+	EntryID   string   `json:"entryId"`
+	ToIndex   int      `json:"toIndex"`
 }
 
 type controlRequest struct {
-	Action string `json:"action"`
-	Index  int    `json:"index"`
+	Action  string `json:"action"`
+	Index   int    `json:"index"`
+	EntryID string `json:"entryId"`
 }
 
 type volumeRequest struct {
@@ -52,6 +57,7 @@ type activeStatus struct {
 	Playing        bool      `json:"playing"`
 	State          string    `json:"state,omitempty"`
 	QueueID        string    `json:"queueId,omitempty"`
+	EntryID        string    `json:"entryId,omitempty"`
 	TrackIndex     int       `json:"trackIndex"`
 	EstimatedIndex int       `json:"estimatedIndex"`
 	StartedAt      time.Time `json:"startedAt,omitempty"`
@@ -105,8 +111,8 @@ func (a *App) updateConfig(w http.ResponseWriter, r *http.Request) {
 	a.playMu.Lock()
 	defer a.playMu.Unlock()
 
-	cfg := a.config()
-	rootChanged := req.MusicRoot != nil && strings.TrimSpace(*req.MusicRoot) != strings.TrimSpace(cfg.MusicRoot)
+	previous := a.config()
+	cfg := previous
 	if req.Address != nil {
 		cfg.Address = *req.Address
 	}
@@ -135,6 +141,11 @@ func (a *App) updateConfig(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	if cfg == previous {
+		writeJSON(w, http.StatusOK, makePublicConfig(cfg))
+		return
+	}
+	rootChanged := cfg.MusicRoot != previous.MusicRoot
 	if err := saveConfig(cfg); err != nil {
 		writeError(w, http.StatusInternalServerError, fmt.Errorf("save config: %w", err))
 		return
@@ -180,7 +191,7 @@ func (a *App) openPath(w http.ResponseWriter, r *http.Request) {
 
 func (a *App) getQueue(w http.ResponseWriter, r *http.Request) {
 	a.queueMu.Lock()
-	q := a.queue
+	q := cloneQueue(a.queue)
 	a.queueMu.Unlock()
 	writeJSON(w, http.StatusOK, map[string]any{"queue": q})
 }
@@ -191,6 +202,15 @@ func (a *App) updateQueue(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	if req.Action == "remove" || req.Action == "move" {
+		a.editQueue(w, req)
+		return
+	}
+	if req.Action != "append" && req.Action != "replace" && req.Action != "" {
+		writeError(w, http.StatusBadRequest, errors.New("unknown queue action"))
+		return
+	}
+	root := a.config().MusicRoot
 	if (len(req.Paths) == 0) == (strings.TrimSpace(req.URL) == "") {
 		writeError(w, http.StatusBadRequest, errors.New("укажите файлы или одну прямую HTTP/HTTPS-ссылку"))
 		return
@@ -217,24 +237,104 @@ func (a *App) updateQueue(w http.ResponseWriter, r *http.Request) {
 	}
 
 	a.playMu.Lock()
-	a.stopPlaybackLocked(false)
-	a.queueMu.Lock()
-	var next []Track
-	if strings.EqualFold(req.Action, "append") && a.queue != nil {
-		next = append(next, a.queue.Tracks...)
+	defer a.playMu.Unlock()
+	if r.Context().Err() != nil {
+		return
 	}
-	added := min(len(tracks), max(0, maxQueueTracks-len(next)))
-	next = append(next, tracks...)
-	if len(next) > maxQueueTracks {
-		next = next[:maxQueueTracks]
+	if a.config().MusicRoot != root {
+		writeError(w, http.StatusConflict, errors.New("библиотека изменилась; повторите добавление"))
+		return
 	}
-	a.queue = &Queue{ID: newQueueID(), Tracks: next, CreatedAt: time.Now().UTC()}
-	q := *a.queue
-	q.Tracks = append([]Track(nil), a.queue.Tracks...)
-	a.queueMu.Unlock()
-	a.playMu.Unlock()
+	appendOnly := req.Action == "append"
+	if !appendOnly {
+		a.stopPlaybackLocked(false)
+	}
+	q, added := a.mergeQueueLocked(tracks, appendOnly)
 
 	writeJSON(w, http.StatusOK, map[string]any{"queue": q, "skipped": skipped, "added": added})
+}
+
+func cloneQueue(q *Queue) *Queue {
+	if q == nil {
+		return nil
+	}
+	copy := *q
+	copy.Tracks = append([]Track(nil), q.Tracks...)
+	return &copy
+}
+
+// Caller holds playMu. Copy-on-write keeps response and stream snapshots immutable.
+func (a *App) mergeQueueLocked(tracks []Track, appendOnly bool) (*Queue, int) {
+	a.queueMu.Lock()
+	defer a.queueMu.Unlock()
+	q := cloneQueue(a.queue)
+	if !appendOnly || q == nil {
+		q = &Queue{ID: newQueueID(), CreatedAt: time.Now().UTC()}
+	}
+	added := min(len(tracks), max(0, maxQueueTracks-len(q.Tracks)))
+	for _, track := range tracks[:added] {
+		track.EntryID = "e" + randomHex(12)
+		q.Tracks = append(q.Tracks, track)
+	}
+	if added > 0 {
+		q.Version++
+	}
+	a.queue = q
+	return cloneQueue(q), added
+}
+
+func (a *App) editQueue(w http.ResponseWriter, req queueRequest) {
+	a.playMu.Lock()
+	defer a.playMu.Unlock()
+	a.queueMu.Lock()
+	if a.queue == nil || a.queue.ID != req.QueueID || a.queue.Version != req.Version {
+		a.queueMu.Unlock()
+		writeError(w, http.StatusConflict, errors.New("очередь изменилась; обновите её и повторите действие"))
+		return
+	}
+	q := cloneQueue(a.queue)
+	index := -1
+	for i, track := range q.Tracks {
+		if track.EntryID == req.EntryID && req.EntryID != "" {
+			index = i
+			break
+		}
+	}
+	if index < 0 || (req.Action == "move" && (req.ToIndex < 0 || req.ToIndex >= len(q.Tracks))) {
+		a.queueMu.Unlock()
+		writeError(w, http.StatusBadRequest, errors.New("трек или позиция не найдены"))
+		return
+	}
+	active := a.active
+	currentID := ""
+	if active != nil && active.TrackIndex < len(q.Tracks) {
+		currentID = q.Tracks[active.TrackIndex].EntryID
+	}
+	removeCurrent := req.Action == "remove" && currentID == req.EntryID
+	a.queueMu.Unlock()
+	if removeCurrent {
+		a.stopPlaybackLocked(true)
+	}
+	a.queueMu.Lock()
+	track := q.Tracks[index]
+	q.Tracks = append(q.Tracks[:index], q.Tracks[index+1:]...)
+	if req.Action == "move" {
+		q.Tracks = append(q.Tracks, Track{})
+		copy(q.Tracks[req.ToIndex+1:], q.Tracks[req.ToIndex:])
+		q.Tracks[req.ToIndex] = track
+	}
+	q.Version++
+	a.queue = q
+	if a.active == active && active != nil {
+		for i, track := range q.Tracks {
+			if track.EntryID == currentID {
+				active.TrackIndex = i
+				break
+			}
+		}
+	}
+	a.queueMu.Unlock()
+	writeJSON(w, http.StatusOK, map[string]any{"queue": q})
 }
 
 func (a *App) clearQueue(w http.ResponseWriter, r *http.Request) {
@@ -274,8 +374,11 @@ func (a *App) upload(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var candidates []trackCandidate
-	var saved []string
+	var saved, skipped, renamed []string
 	for i, header := range files {
+		if r.Context().Err() != nil {
+			return
+		}
 		rel := filepath.Base(header.Filename)
 		if i < len(relativePaths) {
 			rel = relativePaths[i]
@@ -285,66 +388,81 @@ func (a *App) upload(w http.ResponseWriter, r *http.Request) {
 		}
 		abs, cleanRel, err := safeUploadTarget(cfg.UploadDir, rel)
 		if err != nil {
-			writeError(w, http.StatusBadRequest, err)
-			return
+			skipped = append(skipped, rel+": "+err.Error())
+			continue
 		}
 		src, err := header.Open()
 		if err != nil {
-			writeError(w, http.StatusBadRequest, err)
-			return
+			skipped = append(skipped, rel+": "+err.Error())
+			continue
 		}
-		if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
-			_ = src.Close()
-			writeError(w, http.StatusInternalServerError, err)
-			return
-		}
-		dst, err := os.OpenFile(abs, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
-		if err != nil {
-			_ = src.Close()
-			writeError(w, http.StatusInternalServerError, err)
-			return
-		}
-		_, copyErr := io.Copy(dst, src)
-		closeErr := dst.Close()
+		actual, err := saveUpload(r.Context(), abs, src)
 		_ = src.Close()
-		if copyErr != nil {
-			_ = os.Remove(abs)
-			writeError(w, http.StatusInternalServerError, copyErr)
-			return
+		if err != nil {
+			skipped = append(skipped, rel+": "+err.Error())
+			continue
 		}
-		if closeErr != nil {
-			writeError(w, http.StatusInternalServerError, closeErr)
-			return
+		if actual != abs {
+			cleanRel, _ = filepath.Rel(cfg.UploadDir, actual)
+			cleanRel = filepath.ToSlash(cleanRel)
+			renamed = append(renamed, cleanRel)
 		}
-		candidates = append(candidates, trackCandidate{source: abs, display: cleanRel})
+		candidates = append(candidates, trackCandidate{source: actual, display: cleanRel})
 		saved = append(saved, cleanRel)
 	}
-
-	tracks, skipped := a.resolveCandidates(cfg.MusicRoot, candidates)
+	tracks, unreadable := a.resolveCandidates(cfg.MusicRoot, candidates)
+	skipped = append(skipped, unreadable...)
 	addToQueue := r.FormValue("addToQueue") != "false"
 	var q *Queue
 	added := 0
-	if addToQueue && len(tracks) > 0 {
-		a.playMu.Lock()
-		a.stopPlaybackLocked(false)
-		a.queueMu.Lock()
-		var next []Track
-		if a.queue != nil {
-			next = append(next, a.queue.Tracks...)
-		}
-		added = min(len(tracks), max(0, maxQueueTracks-len(next)))
-		next = append(next, tracks...)
-		if len(next) > maxQueueTracks {
-			next = next[:maxQueueTracks]
-		}
-		a.queue = &Queue{ID: newQueueID(), Tracks: next, CreatedAt: time.Now().UTC()}
-		qCopy := *a.queue
-		qCopy.Tracks = append([]Track(nil), next...)
-		q = &qCopy
-		a.queueMu.Unlock()
-		a.playMu.Unlock()
+	if r.Context().Err() != nil {
+		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"saved": saved, "tracks": tracks, "queue": q, "added": added, "skipped": skipped})
+	a.playMu.Lock()
+	if a.config().MusicRoot != cfg.MusicRoot {
+		skipped = append(skipped, "Библиотека изменилась. Файлы сохранены в прежней папке, но не добавлены в очередь.")
+	} else if addToQueue && len(tracks) > 0 {
+		q, added = a.mergeQueueLocked(tracks, true)
+	}
+	a.playMu.Unlock()
+	writeJSON(w, http.StatusOK, map[string]any{"saved": saved, "tracks": tracks, "queue": q, "added": added, "skipped": skipped, "renamed": renamed})
+}
+
+// Publish a fully written temporary file without ever truncating an existing one.
+// Link is atomic and exclusive; concurrent uploads safely get different names.
+func saveUpload(ctx context.Context, target string, src io.Reader) (string, error) {
+	tmp, err := os.CreateTemp(filepath.Dir(target), ".station-upload-*")
+	if err != nil {
+		return "", err
+	}
+	defer os.Remove(tmp.Name())
+	_, copyErr := io.Copy(tmp, src)
+	if copyErr == nil {
+		copyErr = tmp.Chmod(0o644)
+	}
+	closeErr := tmp.Close()
+	if copyErr != nil {
+		return "", copyErr
+	}
+	if closeErr != nil {
+		return "", closeErr
+	}
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	ext := filepath.Ext(target)
+	stem := strings.TrimSuffix(target, ext)
+	for n := 0; ; n++ {
+		candidate := target
+		if n > 0 {
+			candidate = fmt.Sprintf("%s (%d)%s", stem, n, ext)
+		}
+		if err := os.Link(tmp.Name(), candidate); err == nil {
+			return candidate, nil
+		} else if !errors.Is(err, os.ErrExist) {
+			return "", err
+		}
+	}
 }
 
 func (a *App) getStatus(w http.ResponseWriter, r *http.Request) {
@@ -360,9 +478,12 @@ func (a *App) statusResponse() statusResponse {
 		q = &qCopy
 	}
 	active := a.active
+	var activeCopy *Active
 	previousHealth := PlaybackHealth{}
 	if active != nil {
 		previousHealth = active.Health
+		copy := *active
+		activeCopy = &copy
 	}
 	var activeOut *activeStatus
 	a.queueMu.Unlock()
@@ -377,7 +498,7 @@ func (a *App) statusResponse() statusResponse {
 	}
 
 	if active != nil {
-		playing, state, finished := activePlaybackState(active, health, time.Now())
+		playing, state, finished := activePlaybackState(activeCopy, health, time.Now())
 
 		a.queueMu.Lock()
 		if a.active == active {
@@ -388,9 +509,9 @@ func (a *App) statusResponse() statusResponse {
 		err := active.Err
 		a.queueMu.Unlock()
 
-		estimated := active.TrackIndex
+		estimated := activeCopy.TrackIndex
 		if q != nil && q.ID == active.QueueID {
-			estimated = estimateTrackIndex(*q, active, time.Now())
+			estimated = estimateTrackIndex(*q, activeCopy, time.Now())
 		}
 		errText := ""
 		if err != nil {
@@ -400,7 +521,8 @@ func (a *App) statusResponse() statusResponse {
 			Playing:        playing,
 			State:          state,
 			QueueID:        active.QueueID,
-			TrackIndex:     active.TrackIndex,
+			EntryID:        activeCopy.EntryID,
+			TrackIndex:     activeCopy.TrackIndex,
 			EstimatedIndex: estimated,
 			StartedAt:      active.StartedAt,
 			Error:          errText,
@@ -478,16 +600,37 @@ func (a *App) control(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	req.Action = strings.ToLower(strings.TrimSpace(req.Action))
+	a.playMu.Lock()
+	defer a.playMu.Unlock()
+	if req.Action == "stop" {
+		a.stopPlaybackLocked(true)
+		writeJSON(w, http.StatusOK, a.statusResponse())
+		return
+	}
 	a.queueMu.Lock()
 	queueLen := 0
 	current := 0
 	if a.queue != nil {
 		queueLen = len(a.queue.Tracks)
+		if req.EntryID != "" {
+			req.Index = -1
+			for i, track := range a.queue.Tracks {
+				if track.EntryID == req.EntryID {
+					req.Index = i
+					break
+				}
+			}
+		}
 		if a.active != nil {
 			current = estimateTrackIndex(*a.queue, a.active, time.Now())
 		}
 	}
 	a.queueMu.Unlock()
+	if req.EntryID != "" && req.Index < 0 {
+		writeError(w, http.StatusConflict, errors.New("трек больше не находится в очереди; обновите её"))
+		return
+	}
 	if queueLen == 0 {
 		writeError(w, http.StatusBadRequest, errors.New("queue is empty"))
 		return
@@ -506,21 +649,17 @@ func (a *App) control(w http.ResponseWriter, r *http.Request) {
 	case "next":
 		index = current + 1
 		if index >= queueLen {
-			a.stopPlayback(true)
+			a.stopPlaybackLocked(true)
 			writeJSON(w, http.StatusOK, a.statusResponse())
 			return
 		}
 	case "prev", "previous":
 		index = max(0, current-1)
-	case "stop":
-		a.stopPlayback(true)
-		writeJSON(w, http.StatusOK, a.statusResponse())
-		return
 	default:
 		writeError(w, http.StatusBadRequest, fmt.Errorf("unknown action %q", req.Action))
 		return
 	}
-	if err := a.startPlaybackAt(index); err != nil {
+	if err := a.startPlaybackAtLocked(index); err != nil {
 		writeError(w, http.StatusBadGateway, err)
 		return
 	}

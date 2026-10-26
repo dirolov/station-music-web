@@ -34,13 +34,26 @@ func (a *App) serveQueue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	trackValue := strings.TrimSuffix(r.PathValue("track"), ".mp3")
+	q, err := a.queueSnapshot(queueID)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
 	first, err := strconv.Atoi(trackValue)
+	if strings.HasPrefix(trackValue, "e") {
+		first = -1
+		for i, track := range q.Tracks {
+			if track.EntryID == trackValue {
+				first, err = i, nil
+				break
+			}
+		}
+	}
 	if err != nil || first < 0 {
 		http.NotFound(w, r)
 		return
 	}
-	q, err := a.queueSnapshot(queueID)
-	if err != nil || first >= len(q.Tracks) {
+	if first >= len(q.Tracks) {
 		http.NotFound(w, r)
 		return
 	}

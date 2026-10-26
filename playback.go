@@ -119,6 +119,7 @@ func (a *App) startPlaybackAtLocked(index int) error {
 		return fmt.Errorf("track index %d is out of range", index)
 	}
 	queueID := a.queue.ID
+	entryID := a.queue.Tracks[index].EntryID
 	a.queueMu.Unlock()
 
 	streamURL := a.streamURL(cfg, queueID, index)
@@ -141,6 +142,7 @@ func (a *App) startPlaybackAtLocked(index int) error {
 
 	active := &Active{
 		QueueID:    queueID,
+		EntryID:    entryID,
 		TrackIndex: index,
 		StartedAt:  time.Now().UTC(),
 		Cancel:     cancel,
@@ -178,10 +180,11 @@ func (a *App) advancePlayback(active *Active, runErr error) {
 	// queue may have happened while the completed process was waiting for it.
 	a.queueMu.Lock()
 	advance := a.active == active && shouldAutoAdvance(active, runErr, a.queue)
+	next := active.TrackIndex + 1
 	a.queueMu.Unlock()
 	if advance {
-		if err := a.startPlaybackAtLocked(active.TrackIndex + 1); err != nil {
-			log.Printf("auto-advance to track %d: %v", active.TrackIndex+1, err)
+		if err := a.startPlaybackAtLocked(next); err != nil {
+			log.Printf("auto-advance to track %d: %v", next, err)
 		}
 	}
 }
@@ -437,7 +440,13 @@ func shellQuote(value string) string {
 }
 
 func (a *App) streamURL(cfg Config, queueID string, index int) string {
-	return fmt.Sprintf("%s/music/q/%s/%d.mp3?token=%s", resolvePublicBase(cfg), queueID, index, a.token)
+	slot := strconv.Itoa(index)
+	a.queueMu.Lock()
+	if a.queue != nil && a.queue.ID == queueID && index >= 0 && index < len(a.queue.Tracks) && a.queue.Tracks[index].EntryID != "" {
+		slot = a.queue.Tracks[index].EntryID
+	}
+	a.queueMu.Unlock()
+	return fmt.Sprintf("%s/music/q/%s/%s.mp3?token=%s", resolvePublicBase(cfg), queueID, slot, a.token)
 }
 
 func resolvePublicBase(cfg Config) string {

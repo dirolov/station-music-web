@@ -44,6 +44,7 @@ type Config struct {
 }
 
 type Track struct {
+	EntryID  string `json:"entryId,omitempty"`
 	ID       string `json:"id"`
 	Path     string `json:"path"`
 	Title    string `json:"title"`
@@ -57,12 +58,14 @@ type Track struct {
 
 type Queue struct {
 	ID        string    `json:"id"`
+	Version   uint64    `json:"version"`
 	Tracks    []Track   `json:"tracks"`
 	CreatedAt time.Time `json:"createdAt"`
 }
 
 type Active struct {
 	QueueID    string
+	EntryID    string
 	TrackIndex int
 	StartedAt  time.Time
 	Cancel     context.CancelFunc
